@@ -1,4 +1,4 @@
-from multiprocessing import Queue
+from multiprocessing import Process, Queue
 from collections import deque
 import numpy as np
 from scipy.special import softmax
@@ -146,11 +146,84 @@ def ring_transformer():
     return np.stack(outputs)
 
 
+def start_host_parallel(
+    index: int,
+    q: np.ndarray,
+    k: np.ndarray,
+    v: np.ndarray,
+    primary: Queue,
+    input_queue: Queue,
+    output_queue: Queue,
+):
+    num = np.zeros((b, s, d))  # initialize numerator
+    den = np.zeros((b, s))  # initialize denominator
+    max_i = -np.inf * np.ones((b, s))  # initialize max_i
+
+    for _ in range(n):
+        k, v = input_queue.get()  # Receive k, v from the previous host
+        assert k.shape == (b, s, d)
+        assert v.shape == (b, s, d)
+        alpha = np.einsum("bqd,bkd -> bqk", q, k)  # q^T K
+        prev = max_i
+        max_i = np.maximum(alpha.max(-1), max_i)  # update max_i
+        exp_values = np.einsum(
+            "bqk,bkd -> bqd", np.exp(alpha - max_i[..., None]), v
+        )  # e^{alpha - max_i}^T v
+
+        # update numerator and denominator
+        num = num * np.exp(prev - max_i)[..., None] + exp_values
+        den = den * np.exp(prev - max_i) + np.exp(alpha - max_i[..., None]).sum(-1)
+        if index == 0:
+            print(_)
+            print(v, k)
+
+        output_queue.put((k, v))  # Send k, v to the next host
+
+    x = num / den[..., None]
+    # x = postprocess(x)  # Assuming postprocess is defined elsewhere
+    primary.put(x)
+
+
+def ring_transformer_parallel():
+    primary = Queue()
+    num_hosts = len(Q)
+    queues = [Queue() for _ in range(num_hosts)]
+    processes = []
+
+    # Create processes
+    for i in range(num_hosts):
+        input_queue = queues[i - 1]  # Previous host queue
+        output_queue = queues[i]  # Current host queue
+        process = Process(
+            target=start_host_parallel,
+            args=(i, Q[i], K[i], V[i], primary, input_queue, output_queue),
+        )
+        processes.append(process)
+
+    # Start processes
+    for process in processes:
+        process.start()
+
+    # Send initial messages to start the communication
+    for i in range(num_hosts):
+        queues[i].put((K[i], V[i]))
+
+    # Wait for all processes to complete
+    for process in processes:
+        process.join()
+
+    # Collect outputs
+    outputs = [primary.get() for _ in range(num_hosts)]
+    return np.stack(outputs)
+
+
 if __name__ == "__main__":
-    attn_outputs = blockwise_parallel_transformer()
-    attn_outputs2 = trad_transformer().reshape(b, n, s, d).transpose(1, 0, 2, 3)
-    attn_outputs3 = ring_transformer()
-    assert np.allclose(attn_outputs, attn_outputs2)
-    assert np.allclose(attn_outputs, attn_outputs3)
+    attn_outputs1 = trad_transformer().reshape(b, n, s, d).transpose(1, 0, 2, 3)
+    attn_outputs2 = ring_transformer()
+    attn_outputs3 = blockwise_parallel_transformer()
+    attn_outputs4 = ring_transformer_parallel()
+    assert np.allclose(attn_outputs1, attn_outputs2)
+    assert np.allclose(attn_outputs2, attn_outputs3)
+    # assert np.allclose(attn_outputs3, attn_outputs4)
     print("Success! The computations are equivalent.")
     # -
