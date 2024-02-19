@@ -98,7 +98,6 @@ def trad_transformer():
 
 
 def start_host(
-    i,
     q: np.ndarray,
     k: np.ndarray,
     v: np.ndarray,
@@ -135,8 +134,8 @@ def start_host(
 def ring_transformer():
     primary = Queue()
     generators = []
-    for i, (q, k, v) in enumerate(zip(Q, K, V)):
-        generators.append(start_host(i, q, k, v, primary))
+    for q, k, v in zip(Q, K, V):
+        generators.append(start_host(q, k, v, primary))
 
     msgs = deque([None for _ in generators], maxlen=n)
     for _ in range(n + 1):
