@@ -163,6 +163,7 @@ def start_host(
 
     for _ in range(n):
         k, v = input_queue.get()  # Receive k, v from the previous host
+        output_queue.put((k, v))  # Send k, v to the next host
         assert k.shape == (b, s, d)
         assert v.shape == (b, s, d)
         alpha = np.einsum("bqd,bkd -> bqk", q, k)  # q^T K
@@ -175,8 +176,6 @@ def start_host(
         # update numerator and denominator
         num = num * np.exp(prev - max_i)[..., None] + exp_values
         den = den * np.exp(prev - max_i) + np.exp(alpha - max_i[..., None]).sum(-1)
-
-        output_queue.put((k, v))  # Send k, v to the next host
 
     x = num / den[..., None]
     x = postprocess(x)
