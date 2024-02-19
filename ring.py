@@ -133,7 +133,7 @@ def start_host_sync(
     yield None
 
 
-def ring_transformer():
+def ring_transformer_sync():
     primary = Queue()
     generators = []
     for q, k, v in zip(Q, K, V):
@@ -183,7 +183,7 @@ def start_host(
     primary.put((index, x))
 
 
-def ring_transformer_parallel():
+def ring_transformer():
     primary = Queue()
     num_hosts = len(Q)
     queues = [Queue() for _ in range(num_hosts)]
@@ -218,9 +218,9 @@ def ring_transformer_parallel():
 
 if __name__ == "__main__":
     attn_outputs1 = trad_transformer().reshape(b, n, s, d).transpose(1, 0, 2, 3)
-    attn_outputs2 = ring_transformer()
+    attn_outputs2 = ring_transformer_sync()
     attn_outputs3 = blockwise_parallel_transformer()
-    attn_outputs4 = ring_transformer_parallel()
+    attn_outputs4 = ring_transformer()
     assert np.allclose(attn_outputs1, attn_outputs2)
     assert np.allclose(attn_outputs2, attn_outputs3)
     assert np.allclose(attn_outputs3, attn_outputs4)
