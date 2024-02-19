@@ -7,10 +7,10 @@ np.random.seed(0)
 num0 = 0
 den0 = 0
 max_i0 = -np.inf
-n = 3  # number of chunks
-b = 2  # batch dimension (could also include head dimension, since heads are parallel for self-attention)
-s = 7
-d = 5
+n = 2  # number of chunks
+b = 1  # batch dimension (could also include head dimension, since heads are parallel for self-attention)
+s = 1
+d = 1
 Q = np.random.random((n, b, s, d))
 K = np.random.random((n, b, s, d))
 V = np.random.random((n, b, s, d))
@@ -32,8 +32,7 @@ def blockwise_parallel_transformer():
             assert list(k.shape) == [b, s, d]
             assert list(v.shape) == [b, s, d]
             alpha: np.ndarray = np.einsum("bqd,bkd -> bqk", q, k)  # q^T K
-            print(j)
-            print(alpha)
+            print(k)
             prev = max_i
             max_i = np.maximum(alpha.max(-1), max_i)  # update max_i
             exp_values = np.einsum(
@@ -43,7 +42,6 @@ def blockwise_parallel_transformer():
             # update numerator and denominator
             num = num * np.exp(prev - max_i)[..., None] + exp_values
             den = den * np.exp(prev - max_i) + np.exp(alpha - max_i[..., None]).sum(-1)
-        breakpoint()
 
         attn_outputs.append(num / den[..., None])
 

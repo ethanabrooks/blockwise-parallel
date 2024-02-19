@@ -1,4 +1,5 @@
 from multiprocessing import Queue
+from collections import deque
 import numpy as np
 from scipy.special import softmax
 
@@ -8,12 +9,12 @@ num0 = 0
 den0 = 0
 max_i0 = -np.inf
 n = 3  # number of chunks
-b = 2  # batch dimension (could also include head dimension, since heads are parallel for self-attention)
-s = 7
-d = 5
-Q = np.random.random((n, b, s, d))
-K = np.random.random((n, b, s, d))
-V = np.random.random((n, b, s, d))
+b = 1  # batch dimension (could also include head dimension, since heads are parallel for self-attention)
+s = 1
+d = 1
+Q = np.ones((n, b, s, d)) * np.arange(n)[:, None, None, None]
+K = np.ones((n, b, s, d)) * np.arange(n)[:, None, None, None]
+V = np.ones((n, b, s, d)) * np.arange(n)[:, None, None, None]
 
 
 def blockwise_parallel_transformer():
@@ -111,25 +112,23 @@ def ring_transformer():
     for i, (q, k, v) in enumerate(zip(Q, K, V)):
         generators.append(start_host(i, q, k, v, primary))
 
-    msgs = [None for _ in generators]
+    msg = None
+    msgs = deque([None for _ in generators], maxlen=n)
     for _ in range(n):
-        for i, (generator, msg) in enumerate(zip(generators, msgs)):
-            msg = generator.send(msg)
-            msgs[i] = msg
-    for i, (generator, msg) in enumerate(zip(generators, msgs)):
-        generator.send(msg)
+        msgs.rotate(-1)
+        msgs = deque([generator.send(msg) for generator, msg in zip(generators, msgs)])
 
+    return
+    breakpoint()
     outputs = [primary.get() for _ in range(n)]
     return np.stack(outputs)
 
 
 if __name__ == "__main__":
-    attn_outputs = blockwise_parallel_transformer()
-    # attn_outputs = attn_outputs.transpose(1, 0, 2, 3).reshape(
-    #     b, n * s, d
-    # )  # merge blocks for comparison
-    attn_outputs2 = trad_transformer().reshape(b, n, s, d).transpose(1, 0, 2, 3)
-    # attn_outputs2 = ring_transformer()
-    assert np.allclose(attn_outputs, attn_outputs2)
-    print("Success! The two computations are equivalent.")
+    # attn_outputs = blockwise_parallel_transformer()
+    # attn_outputs2 = trad_transformer().reshape(b, n, s, d).transpose(1, 0, 2, 3)
+    attn_outputs3 = ring_transformer()
+    # assert np.allclose(attn_outputs, attn_outputs2)
+    # assert np.allclose(attn_outputs, attn_outputs3)
+    # print("Success! The two computations are equivalent.")
     # -
