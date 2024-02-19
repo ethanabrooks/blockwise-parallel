@@ -1,0 +1,11 @@
+{
+  "editor.formatOnSave": true,
+  "rescript.settings.autoRunCodeAnalysis": false,
+  "cSpell.words": [
+    "glennsl",
+    "tailwindcss"
+  ],
+  "black-formatter.path": [
+    "/nix/store/gknkp125q9ih4lp6sks05my9x099wfba-python3-3.11.7-env/bin/black"
+  ]
+}
