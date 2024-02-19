@@ -44,6 +44,7 @@ def start_host(
     n: int,
     **kwargs
 ):
+    print("Starting host", index)
     b, s, d = q.shape
     num = np.zeros((b, s, d))  # initialize numerator
     den = np.zeros((b, s))  # initialize denominator
@@ -68,6 +69,7 @@ def start_host(
     x = num / den[..., None]
     x = postprocess(x, **kwargs)
     output.put((index, x))
+    print("Host", index, "done")
 
 
 def ring_transformer(Q: np.ndarray, K: np.ndarray, V: np.ndarray, n: int, **kwargs):
