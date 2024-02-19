@@ -79,8 +79,9 @@ def blockwise_parallel_transformer():
             num = num * np.exp(prev - max_i)[..., None] + exp_values
             den = den * np.exp(prev - max_i) + np.exp(alpha - max_i[..., None]).sum(-1)
 
-        output = num / den[..., None]
-        outputs.append(output)
+        x = num / den[..., None]
+        x = postprocess(x)
+        outputs.append(x)
 
     return np.stack(outputs)
 
@@ -92,6 +93,7 @@ def trad_transformer():
     attn_weights: np.ndarray = softmax(np.einsum("bqd,bkd -> bqk", Q1, K1), -1)  # Q^T K
     assert list(attn_weights.shape) == [b, s * n, s * n]
     x = np.einsum("bqk,bkd -> bqd", attn_weights, V1)  # q^T K V
+    x = postprocess(x)
     return x
 
 
@@ -125,7 +127,7 @@ def start_host(
         (k, v) = yield (k, v)
 
     x = num / den[..., None]
-    # x = postprocess(chunk_attn_output)
+    x = postprocess(x)
     primary.put(x)
     yield None
 
