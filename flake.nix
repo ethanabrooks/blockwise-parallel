@@ -33,22 +33,23 @@
       };
 
       buildInputs = with pkgs; [
-                 alejandra
-          nodejs_20
-          ngrok
-          yarn
-          libuuid
-          jq
-          patchelf
-          zip
-          sqlcmd
-          alejandra
-          poetry
-          poetryEnv
+        alejandra
+        nodejs_20
+        ngrok
+        yarn
+        libuuid
+        jq
+        patchelf
+        zip
+        sqlcmd
+        alejandra
+        poetry
+        poetryEnv
       ];
     in rec {
       devShell = pkgs.mkShell rec {
         inherit buildInputs;
+        PYTHONBREAKPOINT = "ipdb.set_trace";
       };
     };
   in
