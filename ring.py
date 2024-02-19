@@ -9,19 +9,52 @@ num0 = 0
 den0 = 0
 max_i0 = -np.inf
 n = 3  # number of chunks
-b = 1  # batch dimension (could also include head dimension, since heads are parallel for self-attention)
+b = 2  # batch dimension (could also include head dimension, since heads are parallel for self-attention)
 s = 2
-d = 1
+d = 2
 # Q = np.ones((n, b, s, d)) * np.arange(n)[:, None, None, None]
 # K = np.ones((n, b, s, d)) * np.arange(n)[:, None, None, None]
 # V = np.ones((n, b, s, d)) * np.arange(n)[:, None, None, None]
 Q = np.random.random((n, b, s, d))
 K = np.random.random((n, b, s, d))
 V = np.random.random((n, b, s, d))
+w1 = np.random.standard_normal((d, d))
+b1 = np.random.standard_normal(d)
+w2 = np.random.standard_normal((d, d))
+b2 = np.random.standard_normal(d)
+
+
+def layer_norm(x: np.ndarray):
+    mean = np.mean(x, axis=-1, keepdims=True)
+    variance = np.var(x, axis=-1, keepdims=True)
+    return (x - mean) / np.sqrt(variance)
+
+
+def relu(x: np.ndarray):
+    return np.maximum(0, x)
+
+
+def linear(x: np.ndarray, w: np.ndarray, b: np.ndarray):
+    return np.einsum("bqd,dw -> bqw", x, w) + b[None, None]
+
+
+def postprocess(x: np.ndarray):
+    x0 = x
+    x = layer_norm(x)
+
+    # 2-layer feedforward network
+    x = linear(x, w1, b1)
+    x = relu(x)
+    x = linear(x, w2, b2)
+
+    # residual connection + layer normalization
+    x = x0 + x
+    x = layer_norm(x)
+    return x
 
 
 def blockwise_parallel_transformer():
-    attn_outputs = []
+    outputs = []
 
     q: np.ndarray
     for i, q in enumerate(Q):
@@ -46,9 +79,10 @@ def blockwise_parallel_transformer():
             num = num * np.exp(prev - max_i)[..., None] + exp_values
             den = den * np.exp(prev - max_i) + np.exp(alpha - max_i[..., None]).sum(-1)
 
-        attn_outputs.append(num / den[..., None])
+        output = num / den[..., None]
+        outputs.append(output)
 
-    return np.stack(attn_outputs)
+    return np.stack(outputs)
 
 
 def trad_transformer():
@@ -57,7 +91,8 @@ def trad_transformer():
     V1 = V.transpose([1, 0, 2, 3]).reshape(b, -1, d)
     attn_weights: np.ndarray = softmax(np.einsum("bqd,bkd -> bqk", Q1, K1), -1)  # Q^T K
     assert list(attn_weights.shape) == [b, s * n, s * n]
-    return np.einsum("bqk,bkd -> bqd", attn_weights, V1)  # q^T K V
+    x = np.einsum("bqk,bkd -> bqd", attn_weights, V1)  # q^T K V
+    return x
 
 
 def start_host(
@@ -89,22 +124,8 @@ def start_host(
         den = den * np.exp(prev - max_i) + np.exp(alpha - max_i[..., None]).sum(-1)
         (k, v) = yield (k, v)
 
-    chunk_attn_output = num / den[..., None]
-    x = chunk_attn_output
-
-    ###################################### NEW CODE ######################################
-    # x = layer_norm(chunk_attn_output)
-
-    # # 2-layer feedforward network
-    # x = linear(x, w1, b1)
-    # x = relu(x)
-    # x = linear(x, w2, b2)
-
-    # # residual connection + layer normalization
-    # x = chunk_attn_output + x
-    # x = layer_norm(x)
-    #################################### END NEW CODE ####################################
-
+    x = num / den[..., None]
+    # x = postprocess(chunk_attn_output)
     primary.put(x)
     yield None
 
@@ -115,7 +136,6 @@ def ring_transformer():
     for i, (q, k, v) in enumerate(zip(Q, K, V)):
         generators.append(start_host(i, q, k, v, primary))
 
-    msg = None
     msgs = deque([None for _ in generators], maxlen=n)
     for _ in range(n + 1):
         msgs.rotate(-1)
