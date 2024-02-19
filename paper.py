@@ -1,6 +1,8 @@
+from multiprocessing import Queue
 import numpy as np
 from scipy.special import softmax
 
+np.random.seed(0)
 # + id="lgYpN68O2Jvu"
 num0 = 0
 den0 = 0
@@ -30,6 +32,8 @@ def blockwise_parallel_transformer():
             assert list(k.shape) == [b, s, d]
             assert list(v.shape) == [b, s, d]
             alpha: np.ndarray = np.einsum("bqd,bkd -> bqk", q, k)  # q^T K
+            print(j)
+            print(alpha)
             prev = max_i
             max_i = np.maximum(alpha.max(-1), max_i)  # update max_i
             exp_values = np.einsum(
@@ -39,6 +43,7 @@ def blockwise_parallel_transformer():
             # update numerator and denominator
             num = num * np.exp(prev - max_i)[..., None] + exp_values
             den = den * np.exp(prev - max_i) + np.exp(alpha - max_i[..., None]).sum(-1)
+        breakpoint()
 
         attn_outputs.append(num / den[..., None])
 
@@ -54,12 +59,73 @@ def trad_transformer():
     return np.einsum("bqk,bkd -> bqd", attn_weights, V1)  # q^T K V
 
 
+def start_host(
+    q: np.ndarray,
+    k: np.ndarray,
+    v: np.ndarray,
+    primary: Queue,
+):
+    assert list(q.shape) == [b, s, d]
+    assert list(k.shape) == [b, s, d]
+    assert list(v.shape) == [b, s, d]
+    alpha: np.ndarray = np.einsum("bqd,bkd -> bqk", q, k)  # q^T K
+    max_i = alpha.max(-1)
+    num = np.einsum("bqk,bkd -> bqd", np.exp(alpha), v)  # e^{alpha - max_i}^T v
+    den = np.exp(alpha).sum(-1)
+
+    for _ in range(n):
+        prev = max_i
+        (max_i, exp_values, exp_weights) = yield (max_i, num, den)
+        max_i = np.maximum(max_i, prev)  # update max_i
+        correction = np.exp(prev - max_i)
+        num = num + exp_values
+        den = den + exp_weights
+
+    chunk_attn_output = num / den[..., None]
+    x = chunk_attn_output
+
+    ###################################### NEW CODE ######################################
+    # x = layer_norm(chunk_attn_output)
+
+    # # 2-layer feedforward network
+    # x = linear(x, w1, b1)
+    # x = relu(x)
+    # x = linear(x, w2, b2)
+
+    # # residual connection + layer normalization
+    # x = chunk_attn_output + x
+    # x = layer_norm(x)
+    #################################### END NEW CODE ####################################
+
+    primary.put(x)
+    yield None
+
+
+def ring_transformer():
+    primary = Queue()
+    generators = []
+    for q, k, v in zip(Q, K, V):
+        generators.append(start_host(q, k, v, primary))
+
+    msgs = [None for _ in generators]
+    for _ in range(n):
+        for i, (generator, msg) in enumerate(zip(generators, msgs)):
+            msg = generator.send(msg)
+            msgs[i] = msg
+    for i, (generator, msg) in enumerate(zip(generators, msgs)):
+        generator.send(msg)
+
+    outputs = [primary.get() for _ in range(n)]
+    return np.stack(outputs)
+
+
 if __name__ == "__main__":
     attn_outputs = blockwise_parallel_transformer()
     attn_outputs = attn_outputs.transpose(1, 0, 2, 3).reshape(
         b, n * s, d
     )  # merge blocks for comparison
     attn_outputs2 = trad_transformer()
+    attn_outputs3 = ring_transformer()
     assert np.allclose(attn_outputs, attn_outputs2)
     print("Success! The two computations are equivalent.")
     # -
