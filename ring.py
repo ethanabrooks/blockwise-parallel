@@ -2,9 +2,9 @@ import numpy as np
 from multiprocessing import Queue
 from scipy.special import softmax
 
-n = 3  # number of chunks
-b = 2  # batch dimension (could also include head dimension, since heads are parallel for self-attention)
-s = 7
+n = 2  # number of chunks
+b = 1  # batch dimension (could also include head dimension, since heads are parallel for self-attention)
+s = 1
 d = 5
 Q = np.random.random((n, b, s, d))
 K = np.random.random((n, b, s, d))
@@ -29,6 +29,36 @@ def linear(x: np.ndarray, w: np.ndarray, b: np.ndarray):
     return np.einsum("bqd,dw -> bqw", x, w) + b[None, None]
 
 
+attn_outputs = []
+
+q: np.ndarray
+for i, q in enumerate(Q):
+    assert list(q.shape) == [b, s, d]
+    num = np.zeros((b, s, d))  # initialize numerator
+    den = np.zeros((b, s))  # initialize denominator
+    max_i = -np.inf * np.ones((b, s))  # initialize max_i
+
+    k: np.ndarray
+    v: np.ndarray
+    for j, (k, v) in enumerate(zip(K, V)):
+        assert list(k.shape) == [b, s, d]
+        assert list(v.shape) == [b, s, d]
+        alpha: np.ndarray = np.einsum("bqd,bkd -> bqk", q, k)  # q^T K
+        prev = max_i
+        max_i = np.maximum(alpha.max(-1), max_i)  # update max_i
+        exp_values = np.einsum(
+            "bqk,bkd -> bqd", np.exp(alpha - max_i[..., None]), v
+        )  # e^{alpha - max_i}^T v
+
+        # update numerator and denominator
+        num = num * np.exp(prev - max_i)[..., None] + exp_values
+        den = den * np.exp(prev - max_i) + np.exp(alpha - max_i[..., None]).sum(-1)
+
+    attn_outputs.append(num / den[..., None])
+
+attn_outputs = np.stack(attn_outputs)
+
+
 def start_host(
     q: np.ndarray,
     k: np.ndarray,
@@ -40,19 +70,16 @@ def start_host(
     assert list(v.shape) == [b, s, d]
     alpha: np.ndarray = np.einsum("bqd,bkd -> bqk", q, k)  # q^T K
     max_i = alpha.max(-1)
-    num = np.einsum(
-        "bqk,bkd -> bqd", np.exp(alpha - max_i[..., None]), v
-    )  # e^{alpha - max_i}^T v
-    den = np.exp(alpha - max_i[..., None]).sum(-1)
+    num = np.einsum("bqk,bkd -> bqd", np.exp(alpha), v)  # e^{alpha - max_i}^T v
+    den = np.exp(alpha).sum(-1)
 
     for _ in range(n):
         prev = max_i
         (max_i, exp_values, exp_weights) = yield (max_i, num, den)
         max_i = np.maximum(max_i, prev)  # update max_i
         correction = np.exp(prev - max_i)
-        breakpoint()
-        num = num * correction[..., None] + exp_values
-        den = den * correction + exp_weights
+        num = num + exp_values
+        den = den + exp_weights
 
     chunk_attn_output = num / den[..., None]
     x = chunk_attn_output
@@ -119,11 +146,10 @@ def main():
     outputs = outputs.transpose(1, 0, 2, 3).reshape(
         b, n * s, d
     )  # merge blocks for comparison
+    print(outputs.shape)
     outputs2 = trad_transformer()
 
-    print(outputs[0])
-    print(outputs2[0])
-    # assert np.allclose(outputs, outputs2)
+    assert np.allclose(outputs2, attn_outputs)
 
 
 if __name__ == "__main__":
