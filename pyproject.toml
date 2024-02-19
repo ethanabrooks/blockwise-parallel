@@ -1,18 +1,14 @@
 [tool.poetry]
-name = "dissertation"
+name = "presentation"
 version = "0.1.0"
 description = ""
 authors = ["ethanabrooks <ethanabrooks@gmail.com>"]
-readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.10"
 tqdm = "^4.66.1"
-pandas = "^2.2.0"
 numpy = "^1.26.4"
-statsmodels = "^0.14.1"
 scipy = "^1.12.0"
-seaborn = "^0.13.2"
 
 [tool.poetry.group.dev.dependencies]
 black = "^22.6.0"

@@ -38,9 +38,9 @@ def start_host(
     q: np.ndarray,
     k: np.ndarray,
     v: np.ndarray,
-    primary: Queue,
-    input_queue: Queue,
-    output_queue: Queue,
+    output: Queue,
+    recv: Queue,
+    send: Queue,
     n: int,
     **kwargs
 ):
@@ -50,8 +50,8 @@ def start_host(
     max_i = -np.inf * np.ones((b, s))  # initialize max_i
 
     for _ in range(n):
-        k, v = input_queue.get()  # Receive k, v from the previous host
-        output_queue.put((k, v))  # Send k, v to the next host
+        k, v = recv.get()  # Receive k, v from the previous host
+        send.put((k, v))  # Send k, v to the next host
         assert k.shape == (b, s, d)
         assert v.shape == (b, s, d)
         alpha = np.einsum("bqd,bkd -> bqk", q, k)  # q^T K
@@ -67,7 +67,7 @@ def start_host(
 
     x = num / den[..., None]
     x = postprocess(x, **kwargs)
-    primary.put((index, x))
+    output.put((index, x))
 
 
 def ring_transformer(Q: np.ndarray, K: np.ndarray, V: np.ndarray, n: int, **kwargs):
@@ -78,11 +78,11 @@ def ring_transformer(Q: np.ndarray, K: np.ndarray, V: np.ndarray, n: int, **kwar
 
     # Create processes
     for i, (q, k, v) in enumerate(zip(Q, K, V)):
-        input_queue = queues[i - 1]  # Previous host queue
-        output_queue = queues[i]  # Current host queue
+        recv = queues[i - 1]  # Previous host queue
+        send = queues[i]  # Current host queue
         process = Process(
             target=start_host,
-            args=(i, q, k, v, primary, input_queue, output_queue, n),
+            args=(i, q, k, v, primary, recv, send, n),
             kwargs=kwargs,
         )
         processes.append(process)
