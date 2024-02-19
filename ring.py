@@ -1,27 +1,5 @@
 from multiprocessing import Process, Queue
-from collections import deque
 import numpy as np
-from scipy.special import softmax
-
-np.random.seed(0)
-# + id="lgYpN68O2Jvu"
-num0 = 0
-den0 = 0
-max_i0 = -np.inf
-n = 3  # number of chunks
-b = 2  # batch dimension (could also include head dimension, since heads are parallel for self-attention)
-s = 7
-d = 5
-Q = np.ones((n, b, s, d)) * np.arange(n)[:, None, None, None]
-K = np.ones((n, b, s, d)) * np.arange(n)[:, None, None, None]
-V = np.ones((n, b, s, d)) * np.arange(n)[:, None, None, None]
-Q = np.random.random((n, b, s, d))
-K = np.random.random((n, b, s, d))
-V = np.random.random((n, b, s, d))
-w1 = np.random.standard_normal((d, d))
-b1 = np.random.standard_normal(d)
-w2 = np.random.standard_normal((d, d))
-b2 = np.random.standard_normal(d)
 
 
 def layer_norm(x: np.ndarray):
@@ -38,7 +16,9 @@ def linear(x: np.ndarray, w: np.ndarray, b: np.ndarray):
     return np.einsum("bqd,dw -> bqw", x, w) + b[None, None]
 
 
-def postprocess(x: np.ndarray):
+def postprocess(
+    x: np.ndarray, w1: np.ndarray, b1: np.ndarray, w2: np.ndarray, b2: np.ndarray
+):
     x0 = x
     x = layer_norm(x)
 
@@ -53,101 +33,6 @@ def postprocess(x: np.ndarray):
     return x
 
 
-def blockwise_parallel_transformer():
-    outputs = []
-
-    q: np.ndarray
-    for i, q in enumerate(Q):
-        assert list(q.shape) == [b, s, d]
-        num = np.zeros((b, s, d))  # initialize numerator
-        den = np.zeros((b, s))  # initialize denominator
-        max_i = -np.inf * np.ones((b, s))  # initialize max_i
-
-        k: np.ndarray
-        v: np.ndarray
-        for j in [2, 1, 0]:
-            k = K[j]
-            v = V[j]
-            assert list(k.shape) == [b, s, d]
-            assert list(v.shape) == [b, s, d]
-            alpha: np.ndarray = np.einsum("bqd,bkd -> bqk", q, k)  # q^T K
-            prev = max_i
-            max_i = np.maximum(alpha.max(-1), max_i)  # update max_i
-            exp_values = np.einsum(
-                "bqk,bkd -> bqd", np.exp(alpha - max_i[..., None]), v
-            )  # e^{alpha - max_i}^T v
-
-            # update numerator and denominator
-            num = num * np.exp(prev - max_i)[..., None] + exp_values
-            den = den * np.exp(prev - max_i) + np.exp(alpha - max_i[..., None]).sum(-1)
-
-        x = num / den[..., None]
-        x = postprocess(x)
-        outputs.append(x)
-
-    return np.stack(outputs)
-
-
-def trad_transformer():
-    Q1 = Q.transpose([1, 0, 2, 3]).reshape(b, -1, d)
-    K1 = K.transpose([1, 0, 2, 3]).reshape(b, -1, d)
-    V1 = V.transpose([1, 0, 2, 3]).reshape(b, -1, d)
-    attn_weights: np.ndarray = softmax(np.einsum("bqd,bkd -> bqk", Q1, K1), -1)  # Q^T K
-    assert list(attn_weights.shape) == [b, s * n, s * n]
-    x = np.einsum("bqk,bkd -> bqd", attn_weights, V1)  # q^T K V
-    x = postprocess(x)
-    return x
-
-
-def start_host_sync(
-    q: np.ndarray,
-    k: np.ndarray,
-    v: np.ndarray,
-    primary: Queue,
-):
-    assert list(q.shape) == [b, s, d]
-    num = np.zeros((b, s, d))  # initialize numerator
-    den = np.zeros((b, s))  # initialize denominator
-    max_i = -np.inf * np.ones((b, s))  # initialize max_i
-
-    k: np.ndarray
-    v: np.ndarray
-    for _ in range(n):
-        assert list(k.shape) == [b, s, d]
-        assert list(v.shape) == [b, s, d]
-        alpha: np.ndarray = np.einsum("bqd,bkd -> bqk", q, k)  # q^T K
-        prev = max_i
-        max_i = np.maximum(alpha.max(-1), max_i)  # update max_i
-        exp_values = np.einsum(
-            "bqk,bkd -> bqd", np.exp(alpha - max_i[..., None]), v
-        )  # e^{alpha - max_i}^T v
-
-        # update numerator and denominator
-        num = num * np.exp(prev - max_i)[..., None] + exp_values
-        den = den * np.exp(prev - max_i) + np.exp(alpha - max_i[..., None]).sum(-1)
-        (k, v) = yield (k, v)
-
-    x = num / den[..., None]
-    x = postprocess(x)
-    primary.put(x)
-    yield None
-
-
-def ring_transformer_sync():
-    primary = Queue()
-    generators = []
-    for q, k, v in zip(Q, K, V):
-        generators.append(start_host_sync(q, k, v, primary))
-
-    msgs = deque([None for _ in generators], maxlen=n)
-    for _ in range(n + 1):
-        msgs.rotate(-1)
-        msgs = deque([generator.send(msg) for generator, msg in zip(generators, msgs)])
-
-    outputs = [primary.get() for _ in range(n)]
-    return np.stack(outputs)
-
-
 def start_host(
     index: int,
     q: np.ndarray,
@@ -156,7 +41,10 @@ def start_host(
     primary: Queue,
     input_queue: Queue,
     output_queue: Queue,
+    n: int,
+    **kwargs
 ):
+    b, s, d = q.shape
     num = np.zeros((b, s, d))  # initialize numerator
     den = np.zeros((b, s))  # initialize denominator
     max_i = -np.inf * np.ones((b, s))  # initialize max_i
@@ -179,11 +67,11 @@ def start_host(
         output_queue.put((k, v))  # Send k, v to the next host
 
     x = num / den[..., None]
-    x = postprocess(x)
+    x = postprocess(x, **kwargs)
     primary.put((index, x))
 
 
-def ring_transformer():
+def ring_transformer(Q: np.ndarray, K: np.ndarray, V: np.ndarray, n: int, **kwargs):
     primary = Queue()
     num_hosts = len(Q)
     queues = [Queue() for _ in range(num_hosts)]
@@ -195,7 +83,8 @@ def ring_transformer():
         output_queue = queues[i]  # Current host queue
         process = Process(
             target=start_host,
-            args=(i, q, k, v, primary, input_queue, output_queue),
+            args=(i, q, k, v, primary, input_queue, output_queue, n),
+            kwargs=kwargs,
         )
         processes.append(process)
 
@@ -214,15 +103,3 @@ def ring_transformer():
     # Collect outputs
     outputs = sorted([primary.get() for _ in range(num_hosts)])
     return np.stack([x for _, x in outputs])
-
-
-if __name__ == "__main__":
-    attn_outputs1 = trad_transformer().reshape(b, n, s, d).transpose(1, 0, 2, 3)
-    attn_outputs2 = ring_transformer_sync()
-    attn_outputs3 = blockwise_parallel_transformer()
-    attn_outputs4 = ring_transformer()
-    assert np.allclose(attn_outputs1, attn_outputs2)
-    assert np.allclose(attn_outputs2, attn_outputs3)
-    assert np.allclose(attn_outputs3, attn_outputs4)
-    print("Success! The computations are equivalent.")
-    # -
