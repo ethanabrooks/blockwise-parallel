@@ -10,18 +10,18 @@ den0 = 0
 max_i0 = -np.inf
 n = 3  # number of chunks
 b = 2  # batch dimension (could also include head dimension, since heads are parallel for self-attention)
-s = 2
-d = 3
+s = 7
+d = 5
 Q = np.ones((n, b, s, d)) * np.arange(n)[:, None, None, None]
 K = np.ones((n, b, s, d)) * np.arange(n)[:, None, None, None]
 V = np.ones((n, b, s, d)) * np.arange(n)[:, None, None, None]
-# Q = np.random.random((n, b, s, d))
-# K = np.random.random((n, b, s, d))
-# V = np.random.random((n, b, s, d))
-w1 = np.random.standard_normal((d, d))
-b1 = np.random.standard_normal(d)
-w2 = np.random.standard_normal((d, d))
-b2 = np.random.standard_normal(d)
+Q = np.random.random((n, b, s, d))
+K = np.random.random((n, b, s, d))
+V = np.random.random((n, b, s, d))
+# w1 = np.random.standard_normal((d, d))
+# b1 = np.random.standard_normal(d)
+# w2 = np.random.standard_normal((d, d))
+# b2 = np.random.standard_normal(d)
 
 
 def layer_norm(x: np.ndarray):
@@ -83,8 +83,6 @@ def blockwise_parallel_transformer():
             den = den * np.exp(prev - max_i) + np.exp(alpha - max_i[..., None]).sum(-1)
 
         x = num / den[..., None]
-        print("bpt")
-        print(x)
         x = postprocess(x)
         outputs.append(x)
 
@@ -182,7 +180,6 @@ def start_host_parallel(
         output_queue.put((k, v))  # Send k, v to the next host
 
     x = num / den[..., None]
-    print("parallel", x)
     # x = postprocess(x)  # Assuming postprocess is defined elsewhere
     primary.put((index, x))
 
@@ -194,12 +191,12 @@ def ring_transformer_parallel():
     processes = []
 
     # Create processes
-    for i in range(num_hosts):
+    for i, (q, k, v) in enumerate(zip(Q, K, V)):
         input_queue = queues[i - 1]  # Previous host queue
         output_queue = queues[i]  # Current host queue
         process = Process(
             target=start_host_parallel,
-            args=(i, Q[i], K[i], V[i], primary, input_queue, output_queue),
+            args=(i, q, k, v, primary, input_queue, output_queue),
         )
         processes.append(process)
 
@@ -208,8 +205,8 @@ def ring_transformer_parallel():
         process.start()
 
     # Send initial messages to start the communication
-    for i in range(num_hosts):
-        queues[i].put((K[i], V[i]))
+    for queue, k, v in zip(queues, K, V):
+        queue.put((k, v))
 
     # Wait for all processes to complete
     for process in processes:
@@ -227,10 +224,6 @@ if __name__ == "__main__":
     attn_outputs4 = ring_transformer_parallel()
     assert np.allclose(attn_outputs1, attn_outputs2)
     assert np.allclose(attn_outputs2, attn_outputs3)
-    print("=================")
-    print(attn_outputs3)
-    print("=================")
-    print(attn_outputs4)
     assert np.allclose(attn_outputs3, attn_outputs4)
     print("Success! The computations are equivalent.")
     # -
