@@ -184,7 +184,7 @@ def start_host_parallel(
     x = num / den[..., None]
     print("parallel", x)
     # x = postprocess(x)  # Assuming postprocess is defined elsewhere
-    primary.put(x)
+    primary.put((index, x))
 
 
 def ring_transformer_parallel():
@@ -216,8 +216,8 @@ def ring_transformer_parallel():
         process.join()
 
     # Collect outputs
-    outputs = [primary.get() for _ in range(num_hosts)]
-    return np.stack(outputs)
+    outputs = sorted([primary.get() for _ in range(num_hosts)])
+    return np.stack([x for _, x in outputs])
 
 
 if __name__ == "__main__":
