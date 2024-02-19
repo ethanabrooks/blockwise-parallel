@@ -10,11 +10,14 @@ den0 = 0
 max_i0 = -np.inf
 n = 3  # number of chunks
 b = 1  # batch dimension (could also include head dimension, since heads are parallel for self-attention)
-s = 1
+s = 2
 d = 1
-Q = np.ones((n, b, s, d)) * np.arange(n)[:, None, None, None]
-K = np.ones((n, b, s, d)) * np.arange(n)[:, None, None, None]
-V = np.ones((n, b, s, d)) * np.arange(n)[:, None, None, None]
+# Q = np.ones((n, b, s, d)) * np.arange(n)[:, None, None, None]
+# K = np.ones((n, b, s, d)) * np.arange(n)[:, None, None, None]
+# V = np.ones((n, b, s, d)) * np.arange(n)[:, None, None, None]
+Q = np.random.random((n, b, s, d))
+K = np.random.random((n, b, s, d))
+V = np.random.random((n, b, s, d))
 
 
 def blockwise_parallel_transformer():
@@ -114,21 +117,19 @@ def ring_transformer():
 
     msg = None
     msgs = deque([None for _ in generators], maxlen=n)
-    for _ in range(n):
+    for _ in range(n + 1):
         msgs.rotate(-1)
         msgs = deque([generator.send(msg) for generator, msg in zip(generators, msgs)])
 
-    return
-    breakpoint()
     outputs = [primary.get() for _ in range(n)]
     return np.stack(outputs)
 
 
 if __name__ == "__main__":
-    # attn_outputs = blockwise_parallel_transformer()
-    # attn_outputs2 = trad_transformer().reshape(b, n, s, d).transpose(1, 0, 2, 3)
+    attn_outputs = blockwise_parallel_transformer()
+    attn_outputs2 = trad_transformer().reshape(b, n, s, d).transpose(1, 0, 2, 3)
     attn_outputs3 = ring_transformer()
-    # assert np.allclose(attn_outputs, attn_outputs2)
-    # assert np.allclose(attn_outputs, attn_outputs3)
-    # print("Success! The two computations are equivalent.")
+    assert np.allclose(attn_outputs, attn_outputs2)
+    assert np.allclose(attn_outputs, attn_outputs3)
+    print("Success! The computations are equivalent.")
     # -
