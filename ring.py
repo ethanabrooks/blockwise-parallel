@@ -11,13 +11,13 @@ max_i0 = -np.inf
 n = 3  # number of chunks
 b = 2  # batch dimension (could also include head dimension, since heads are parallel for self-attention)
 s = 2
-d = 2
-# Q = np.ones((n, b, s, d)) * np.arange(n)[:, None, None, None]
-# K = np.ones((n, b, s, d)) * np.arange(n)[:, None, None, None]
-# V = np.ones((n, b, s, d)) * np.arange(n)[:, None, None, None]
-Q = np.random.random((n, b, s, d))
-K = np.random.random((n, b, s, d))
-V = np.random.random((n, b, s, d))
+d = 3
+Q = np.ones((n, b, s, d)) * np.arange(n)[:, None, None, None]
+K = np.ones((n, b, s, d)) * np.arange(n)[:, None, None, None]
+V = np.ones((n, b, s, d)) * np.arange(n)[:, None, None, None]
+# Q = np.random.random((n, b, s, d))
+# K = np.random.random((n, b, s, d))
+# V = np.random.random((n, b, s, d))
 w1 = np.random.standard_normal((d, d))
 b1 = np.random.standard_normal(d)
 w2 = np.random.standard_normal((d, d))
@@ -39,18 +39,19 @@ def linear(x: np.ndarray, w: np.ndarray, b: np.ndarray):
 
 
 def postprocess(x: np.ndarray):
-    x0 = x
-    x = layer_norm(x)
-
-    # 2-layer feedforward network
-    x = linear(x, w1, b1)
-    x = relu(x)
-    x = linear(x, w2, b2)
-
-    # residual connection + layer normalization
-    x = x0 + x
-    x = layer_norm(x)
     return x
+    # x0 = x
+    # x = layer_norm(x)
+
+    # # 2-layer feedforward network
+    # x = linear(x, w1, b1)
+    # x = relu(x)
+    # x = linear(x, w2, b2)
+
+    # # residual connection + layer normalization
+    # x = x0 + x
+    # x = layer_norm(x)
+    # return x
 
 
 def blockwise_parallel_transformer():
@@ -65,7 +66,9 @@ def blockwise_parallel_transformer():
 
         k: np.ndarray
         v: np.ndarray
-        for j, (k, v) in enumerate(zip(K, V)):
+        for j in [2, 1, 0]:
+            k = K[j]
+            v = V[j]
             assert list(k.shape) == [b, s, d]
             assert list(v.shape) == [b, s, d]
             alpha: np.ndarray = np.einsum("bqd,bkd -> bqk", q, k)  # q^T K
@@ -80,6 +83,8 @@ def blockwise_parallel_transformer():
             den = den * np.exp(prev - max_i) + np.exp(alpha - max_i[..., None]).sum(-1)
 
         x = num / den[..., None]
+        print("bpt")
+        print(x)
         x = postprocess(x)
         outputs.append(x)
 
@@ -173,13 +178,11 @@ def start_host_parallel(
         # update numerator and denominator
         num = num * np.exp(prev - max_i)[..., None] + exp_values
         den = den * np.exp(prev - max_i) + np.exp(alpha - max_i[..., None]).sum(-1)
-        if index == 0:
-            print(_)
-            print(v, k)
 
         output_queue.put((k, v))  # Send k, v to the next host
 
     x = num / den[..., None]
+    print("parallel", x)
     # x = postprocess(x)  # Assuming postprocess is defined elsewhere
     primary.put(x)
 
@@ -224,6 +227,10 @@ if __name__ == "__main__":
     attn_outputs4 = ring_transformer_parallel()
     assert np.allclose(attn_outputs1, attn_outputs2)
     assert np.allclose(attn_outputs2, attn_outputs3)
-    # assert np.allclose(attn_outputs3, attn_outputs4)
+    print("=================")
+    print(attn_outputs3)
+    print("=================")
+    print(attn_outputs4)
+    assert np.allclose(attn_outputs3, attn_outputs4)
     print("Success! The computations are equivalent.")
     # -
