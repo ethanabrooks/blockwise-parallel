@@ -18,10 +18,10 @@ V = np.ones((n, b, s, d)) * np.arange(n)[:, None, None, None]
 Q = np.random.random((n, b, s, d))
 K = np.random.random((n, b, s, d))
 V = np.random.random((n, b, s, d))
-# w1 = np.random.standard_normal((d, d))
-# b1 = np.random.standard_normal(d)
-# w2 = np.random.standard_normal((d, d))
-# b2 = np.random.standard_normal(d)
+w1 = np.random.standard_normal((d, d))
+b1 = np.random.standard_normal(d)
+w2 = np.random.standard_normal((d, d))
+b2 = np.random.standard_normal(d)
 
 
 def layer_norm(x: np.ndarray):
@@ -39,19 +39,18 @@ def linear(x: np.ndarray, w: np.ndarray, b: np.ndarray):
 
 
 def postprocess(x: np.ndarray):
+    x0 = x
+    x = layer_norm(x)
+
+    # 2-layer feedforward network
+    x = linear(x, w1, b1)
+    x = relu(x)
+    x = linear(x, w2, b2)
+
+    # residual connection + layer normalization
+    x = x0 + x
+    x = layer_norm(x)
     return x
-    # x0 = x
-    # x = layer_norm(x)
-
-    # # 2-layer feedforward network
-    # x = linear(x, w1, b1)
-    # x = relu(x)
-    # x = linear(x, w2, b2)
-
-    # # residual connection + layer normalization
-    # x = x0 + x
-    # x = layer_norm(x)
-    # return x
 
 
 def blockwise_parallel_transformer():
@@ -100,7 +99,7 @@ def trad_transformer():
     return x
 
 
-def start_host(
+def start_host_sync(
     q: np.ndarray,
     k: np.ndarray,
     v: np.ndarray,
@@ -138,7 +137,7 @@ def ring_transformer():
     primary = Queue()
     generators = []
     for q, k, v in zip(Q, K, V):
-        generators.append(start_host(q, k, v, primary))
+        generators.append(start_host_sync(q, k, v, primary))
 
     msgs = deque([None for _ in generators], maxlen=n)
     for _ in range(n + 1):
@@ -149,7 +148,7 @@ def ring_transformer():
     return np.stack(outputs)
 
 
-def start_host_parallel(
+def start_host(
     index: int,
     q: np.ndarray,
     k: np.ndarray,
@@ -180,7 +179,7 @@ def start_host_parallel(
         output_queue.put((k, v))  # Send k, v to the next host
 
     x = num / den[..., None]
-    # x = postprocess(x)  # Assuming postprocess is defined elsewhere
+    x = postprocess(x)
     primary.put((index, x))
 
 
@@ -195,7 +194,7 @@ def ring_transformer_parallel():
         input_queue = queues[i - 1]  # Previous host queue
         output_queue = queues[i]  # Current host queue
         process = Process(
-            target=start_host_parallel,
+            target=start_host,
             args=(i, q, k, v, primary, input_queue, output_queue),
         )
         processes.append(process)
