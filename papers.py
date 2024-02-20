@@ -149,7 +149,7 @@ def ring_transformer_sync():
     return np.stack(outputs)
 
 
-def start_host(index, q, n, input_queue, output_queue, **kwargs):
+def start_host(index: int, q: np.ndarray, recv: Queue, send: Queue):
     print(f"Starting host {index}")
     b, s, d = q.shape
     num = np.zeros((b, s, d))  # initialize numerator
@@ -157,10 +157,12 @@ def start_host(index, q, n, input_queue, output_queue, **kwargs):
     max_i = -np.inf * np.ones((b, s))  # initialize max_i
 
     for _ in range(n):
-        k, v = input_queue.get()  # Receive k, v from the input queue (previous host)
+        k: np.ndarray
+        v: np.ndarray
+        k, v = recv.get()  # Receive k, v from the input queue (previous host)
         assert k.shape == (b, s, d) and v.shape == (b, s, d)
 
-        alpha = np.einsum("bqd,bkd -> bqk", q, k)  # q^T K
+        alpha: np.ndarray = np.einsum("bqd,bkd -> bqk", q, k)  # q^T K
         prev = max_i
         max_i = np.maximum(alpha.max(-1), max_i)  # update max_i
         exp_values = np.einsum("bqk,bkd -> bqd", np.exp(alpha - max_i[..., None]), v)
@@ -168,40 +170,33 @@ def start_host(index, q, n, input_queue, output_queue, **kwargs):
         num = num * np.exp(prev - max_i)[..., None] + exp_values
         den = den * np.exp(prev - max_i) + np.exp(alpha - max_i[..., None]).sum(-1)
 
-        output_queue.put((k, v))  # Send (k, v) to the output queue for the next host
+        send.put((k, v))  # Send (k, v) to the output queue for the next host
 
     x = num / den[..., None]
-    x = postprocess(x, **kwargs)  # Assuming postprocess is defined elsewhere
+    x = postprocess(x)
     print(f"Host {index} done")
     return index, x
 
 
-def ring_transformer(**kwargs):
+def ring_transformer():
     num_hosts = len(Q)
-    primary = []  # List to collect outputs
     queues = [
         Queue() for _ in range(num_hosts + 1)
     ]  # Create queues for each host pair, plus one extra to complete the ring
 
     # Initialize the first set of (k, v) pairs in the queues
-    for i in range(num_hosts):
-        queues[i].put((K[i], V[i]))
+    for queue, k, v in zip(queues, K, V):
+        queue.put((k, v))
 
     with ThreadPoolExecutor(max_workers=num_hosts) as executor:
         futures = [
-            executor.submit(
-                start_host, i, Q[i], n, queues[i], queues[(i + 1) % num_hosts], **kwargs
-            )
-            for i in range(num_hosts)
+            executor.submit(start_host, i, q, queues[i], queues[(i + 1) % num_hosts])
+            for i, q in enumerate(Q)
         ]
-
-        for future in futures:
-            index, x = future.result()
-            primary.append((index, x))
+        outputs = [future.result() for future in futures]
 
     # Ensure outputs are sorted by index to maintain deterministic order
-    outputs = sorted(primary, key=lambda x: x[0])
-    return np.stack([x for _, x in outputs])
+    return np.stack([x for _, x in sorted(outputs)])
 
 
 if __name__ == "__main__":
