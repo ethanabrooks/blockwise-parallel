@@ -1,4 +1,5 @@
-from multiprocessing import Process, Queue
+from concurrent.futures import ThreadPoolExecutor
+from multiprocessing import Queue
 from collections import deque
 import numpy as np
 from scipy.special import softmax
@@ -148,70 +149,58 @@ def ring_transformer_sync():
     return np.stack(outputs)
 
 
-def start_host(
-    index: int,
-    q: np.ndarray,
-    k: np.ndarray,
-    v: np.ndarray,
-    primary: Queue,
-    input_queue: Queue,
-    output_queue: Queue,
-):
+def start_host(index, q, n, input_queue, output_queue, **kwargs):
+    print(f"Starting host {index}")
+    b, s, d = q.shape
     num = np.zeros((b, s, d))  # initialize numerator
     den = np.zeros((b, s))  # initialize denominator
     max_i = -np.inf * np.ones((b, s))  # initialize max_i
 
     for _ in range(n):
-        k, v = input_queue.get()  # Receive k, v from the previous host
-        output_queue.put((k, v))  # Send k, v to the next host
-        assert k.shape == (b, s, d)
-        assert v.shape == (b, s, d)
+        k, v = input_queue.get()  # Receive k, v from the input queue (previous host)
+        assert k.shape == (b, s, d) and v.shape == (b, s, d)
+
         alpha = np.einsum("bqd,bkd -> bqk", q, k)  # q^T K
         prev = max_i
         max_i = np.maximum(alpha.max(-1), max_i)  # update max_i
-        exp_values = np.einsum(
-            "bqk,bkd -> bqd", np.exp(alpha - max_i[..., None]), v
-        )  # e^{alpha - max_i}^T v
+        exp_values = np.einsum("bqk,bkd -> bqd", np.exp(alpha - max_i[..., None]), v)
 
-        # update numerator and denominator
         num = num * np.exp(prev - max_i)[..., None] + exp_values
         den = den * np.exp(prev - max_i) + np.exp(alpha - max_i[..., None]).sum(-1)
 
+        output_queue.put((k, v))  # Send (k, v) to the output queue for the next host
+
     x = num / den[..., None]
-    x = postprocess(x)
-    primary.put((index, x))
+    x = postprocess(x, **kwargs)  # Assuming postprocess is defined elsewhere
+    print(f"Host {index} done")
+    return index, x
 
 
-def ring_transformer():
-    primary = Queue()
+def ring_transformer(**kwargs):
     num_hosts = len(Q)
-    queues = [Queue() for _ in range(num_hosts)]
-    processes = []
+    primary = []  # List to collect outputs
+    queues = [
+        Queue() for _ in range(num_hosts + 1)
+    ]  # Create queues for each host pair, plus one extra to complete the ring
 
-    # Create processes
-    for i, (q, k, v) in enumerate(zip(Q, K, V)):
-        input_queue = queues[i - 1]  # Previous host queue
-        output_queue = queues[i]  # Current host queue
-        process = Process(
-            target=start_host,
-            args=(i, q, k, v, primary, input_queue, output_queue),
-        )
-        processes.append(process)
+    # Initialize the first set of (k, v) pairs in the queues
+    for i in range(num_hosts):
+        queues[i].put((K[i], V[i]))
 
-    # Start processes
-    for process in processes:
-        process.start()
+    with ThreadPoolExecutor(max_workers=num_hosts) as executor:
+        futures = [
+            executor.submit(
+                start_host, i, Q[i], n, queues[i], queues[(i + 1) % num_hosts], **kwargs
+            )
+            for i in range(num_hosts)
+        ]
 
-    # Send initial messages to start the communication
-    for queue, k, v in zip(queues, K, V):
-        queue.put((k, v))
+        for future in futures:
+            index, x = future.result()
+            primary.append((index, x))
 
-    # Wait for all processes to complete
-    for process in processes:
-        process.join()
-
-    # Collect outputs
-    outputs = sorted([primary.get() for _ in range(num_hosts)])
+    # Ensure outputs are sorted by index to maintain deterministic order
+    outputs = sorted(primary, key=lambda x: x[0])
     return np.stack([x for _, x in outputs])
 
 
